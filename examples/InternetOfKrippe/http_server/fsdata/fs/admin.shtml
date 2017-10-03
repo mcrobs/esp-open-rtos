@@ -1,0 +1,143 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, user-scalable=no">
+
+<link rel="stylesheet" type="text/css" href="css/siimple.min.css">
+<link rel="stylesheet" type="text/css" href="css/style.css">
+<link rel="shortcut icon" href="img/favicon.png">
+
+<script type="text/javascript" src="140medley.min.js"></script>
+<script type="text/javascript">
+	var xhr = j();
+	var currAp = "";
+
+	function createInputForAp(ap) {
+		if (ap.essid == "" && ap.rssi == 0)
+			return;
+		var div = document.createElement("div");
+		div.id = "apdiv";
+		var rssi = document.createElement("div");
+		var rssiVal = -Math.floor(ap.rssi / 51) * 32;
+		rssi.className = "icon";
+		rssi.style.backgroundPosition = "0px " + rssiVal + "px";
+		var encrypt = document.createElement("div");
+		var encVal = "-64"; //assume wpa/wpa2
+		if (ap.enc == "0")
+			encVal = "0"; //open
+		if (ap.enc == "1")
+			encVal = "-32"; //wep
+		encrypt.className = "icon";
+		encrypt.style.backgroundPosition = "-32px " + encVal + "px";
+		var input = document.createElement("input");
+		input.type = "radio";
+		input.name = "essid";
+		input.value = ap.essid;
+		if (currAp.trim() == ap.essid)
+			input.checked = "1";
+		input.id = "opt-" + ap.essid;
+		var label = document.createElement("label");
+		label.htmlFor = "opt-" + ap.essid;
+		label.textContent = ap.essid;
+		div.appendChild(input);
+		div.appendChild(rssi);
+		div.appendChild(encrypt);
+		div.appendChild(label);
+		return div;
+	}
+
+	function getSelectedEssid() {
+		var e = document.forms.wifiform.elements;
+		for (var i = 0; i < e.length; i++) {
+			if (e[i].type == "radio" && e[i].checked)
+				return e[i].value;
+		}
+		return currAp;
+	}
+
+	function scanAPs() {
+		xhr.open("GET", "wifiscan.js");
+		xhr.onreadystatechange = function() {
+			if (xhr.readyState == 4 && xhr.status >= 200 && xhr.status < 300) {
+				eval("var x = " + xhr.responseText);
+				//var jsonstring = JSON.stringify(x);
+				var data = JSON.parse(JSON.stringify(x));
+				//(inspect(xhr.responseText));
+				currAp = getSelectedEssid();
+				if (data.result.inProgress == "0" && data.result.APs.length > 1) {
+					$("#aps").innerHTML = "";
+					for (var i = 0; i < data.result.APs.length; i++) {
+						if (data.result.APs[i].essid == ""
+								&& data.result.APs[i].rssi == 0)
+							continue;
+						$("#aps").appendChild(
+								createInputForAp(data.result.APs[i]));
+					}
+					window.setTimeout(scanAPs, 20000);
+				} else {
+					window.setTimeout(scanAPs, 1000);
+				}
+			}
+		}
+		xhr.send();
+	}
+
+	window.onload = function(e) {
+		currAp = $("#currap").innerHTML.replace(/<[^>]*>/i, "").trim();
+		var pass = $("#currpass").innerHTML.replace(/<[^>]*>/i, "").trim();
+		var url = $("#currurl").innerHTML.replace(/<[^>]*>/i, "").trim();
+		$("#pass").value = pass;
+		$("#picurl").value = url;
+		scanAPs();
+	};
+</script>
+
+
+<title>Pic(nic)ture Server</title>
+</head>
+<body>
+	<div id="currap" style="display: none;">
+		<!--#wifissid-->
+	</div>
+	<div id="currpass" style="display: none;">
+		<!--#wifipass-->
+	</div>
+	<div id="currurl" style="display: none;">
+		<!--#picurl-->
+	</div>
+	<ul class="navbar">
+		<li><a href="home">Home</a></li>
+		<li><a class="active" href="admin">Admin</a></li>
+		<li><a href="about">About</a></li>
+	</ul>
+	<div id="main">
+		<p>
+			Current WiFi mode:
+			<!--#wifimode-->
+		</p>
+		<form name="wifiform" action="connect.shtml" method="get">
+			<table class="table table-striped">
+				<tr>
+					<td><b>WiFi Aps:</b></td>
+					<td><div id="aps">Scanning...</div></td>
+				</tr>
+				<tr>
+					<td><b>WiFi password:</b></td>
+					<td><input id="pass" type="text" name="passwd" value="" /></td>
+				</tr>
+				<tr>
+					<td><b>Data source URL:</b></td>
+					<td><input id="picurl" type="url" name="datasource" value="" />
+					</td>
+				</tr>
+				<tr>
+					<td id="connect" colspan="2" align="center"><input
+						type="submit" name="connect" value="Connect!" /></td>
+				</tr>
+			</table>
+
+		</form>
+	</div>
+</body>
+</html>

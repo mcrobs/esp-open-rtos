@@ -1,0 +1,2 @@
+CC /home/robby/git/esp-open-rtos/examples/InternetOfKrippe/main.c
+../../common.mk:197: recipe for target 'build/program//main.o' failed
