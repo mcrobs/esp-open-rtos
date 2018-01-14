@@ -5,6 +5,7 @@
 #include "FreeRTOS.h"
 #include "InternetOfKrippe.h"
 #include "lib/espwifi.h"
+#include "lib/DFRobotDFPlayerMini.h"
 #include "task.h"
 #include "queue.h"
 #include "string.h"
@@ -32,11 +33,14 @@ void user_init(void) {
 	uart_set_baud(0, 115200);
 	uint32_t rtc_einkmode = initRTC();
 	printf("SDK version:%s\n", sdk_system_get_sdk_version());
-	if (rtc_einkmode == RTC_EINK_BATEMP_MODE) {
+	testDFPlayer();
+
+/*	if (rtc_einkmode == RTC_EINK_BATEMP_MODE) {
 		//                      2147483648
 		sdk_system_deep_sleep(30 * 1000000); //sleep time in usecs. 10000000 = 10 secs
 	}
 	if (rtc_einkmode == RTC_EINK_CONFMODE) {
 		xTaskCreate(httpd_task, "HTTPD", 1024, NULL, 2, NULL);
 	}
+*/
 }

@@ -33,12 +33,6 @@
 				</td>
 			</tr>
 			<tr>
-				<td><b>Picture URL:</b></td>
-				<td id="picurl">
-					<!--#picurl-->
-				</td>
-			</tr>
-			<tr>
 				<td><b>Uptime:</b></td>
 				<td>
 					<!--#uptime--> seconds
