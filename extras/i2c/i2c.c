@@ -1,18 +1,18 @@
-/* 
+/*
  * The MIT License (MIT)
- * 
+ *
  * Copyright (c) 2015 Johan Kanflo (github.com/kanflo)
- * 
+ *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
  * in the Software without restriction, including without limitation the rights
  * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
  * copies of the Software, and to permit persons to whom the Software is
  * furnished to do so, subject to the following conditions:
- * 
+ *
  * The above copyright notice and this permission notice shall be included in
  * all copies or substantial portions of the Software.
- * 
+ *
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
  * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
  * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
@@ -22,219 +22,406 @@
  * THE SOFTWARE.
  */
 
-#include <esp8266.h>
-#include <espressif/esp_misc.h> // sdk_os_delay_us
 #include "i2c.h"
 
+#include <esp8266.h>
+#include <espressif/esp_system.h>
+#include <FreeRTOS.h>
+#include <task.h>
 
-// I2C driver for ESP8266 written for use with esp-open-rtos
-// Based on https://en.wikipedia.org/wiki/I²C#Example_of_bit-banging_the_I.C2.B2C_Master_protocol
+//#define I2C_DEBUG true
 
-// With calling overhead, we end up at ~100kbit/s
-#define CLK_HALF_PERIOD_US (1)
+#ifdef I2C_DEBUG
+#define debug(fmt, ...) printf("%s: " fmt "\n", "I2C", ## __VA_ARGS__)
+#else
+#define debug(fmt, ...)
+#endif
 
-#define CLK_STRETCH  (10)
+// The following array contains delay values for different frequencies.
+// These were tuned to match the specified SCL frequency on average.
+// The tuning was done using GCC 5.2.0 with -O2 optimization.
+const static uint8_t i2c_freq_array[][2] = {
+#if I2C_USE_GPIO16 == 1
+    [I2C_FREQ_80K]   = {230, 107},
+    [I2C_FREQ_100K]  = {180, 82},
+    [I2C_FREQ_400K]  = {30, 7},
+    [I2C_FREQ_500K]  = {20, 1},
+    [I2C_FREQ_600K]  = {13, 0},
+    [I2C_FREQ_800K]  = {5, 0},
+    [I2C_FREQ_1000K] = {1, 0}
+#else
+    [I2C_FREQ_80K]   = {235, 112},
+    [I2C_FREQ_100K]  = {185, 88},
+    [I2C_FREQ_400K]  = {36, 13},
+    [I2C_FREQ_500K]  = {25, 8},
+    [I2C_FREQ_600K]  = {20, 5},
+    [I2C_FREQ_800K]  = {11, 1},
+    [I2C_FREQ_1000K] = {5, 0},
+    [I2C_FREQ_1300K] = {1, 0}
+#endif
+};
 
-static bool started;
-static uint8_t g_scl_pin;
-static uint8_t g_sda_pin;
-
-void i2c_init(uint8_t scl_pin, uint8_t sda_pin)
+// Bus settings
+typedef struct i2c_bus_description
 {
-    started = false;
-    g_scl_pin = scl_pin;
-    g_sda_pin = sda_pin;
+#if I2C_USE_GPIO16 == 1
+  uint8_t g_scl_pin;     // SCL pin
+  uint8_t g_sda_pin;     // SDA pin
+#else
+  uint32_t g_scl_mask;   // SCL pin mask
+  uint32_t g_sda_mask;   // SDA pin mask
+#endif
+  i2c_freq_t frequency;  // Frequency
+  uint8_t delay;
+  bool started;
+  bool flag;
+  bool force;
+  uint32_t clk_stretch;
+} i2c_bus_description_t;
+
+static i2c_bus_description_t i2c_bus[I2C_MAX_BUS];
+
+inline bool i2c_status(uint8_t bus)
+{
+    return i2c_bus[bus].started;
+}
+
+int i2c_init(uint8_t bus, uint8_t scl_pin, uint8_t sda_pin, i2c_freq_t freq)
+{
+    if (bus >= I2C_MAX_BUS) {
+        debug("Invalid bus");
+        return -EINVAL;
+    }
+
+#if I2C_USE_GPIO16 == 1
+    const int I2C_MAX_PIN = 16;
+#else
+    const int I2C_MAX_PIN = 15;
+#endif
+
+    if (scl_pin > I2C_MAX_PIN || sda_pin > I2C_MAX_PIN)
+    {
+        debug("Invalid GPIO number. All pins must be less than or equal to %d",
+              I2C_MAX_PIN);
+        return -EINVAL;
+    }
+
+    i2c_bus[bus].started = false;
+    i2c_bus[bus].flag = false;
+#if I2C_USE_GPIO16 == 1
+    i2c_bus[bus].g_scl_pin = scl_pin;
+    i2c_bus[bus].g_sda_pin = sda_pin;
+#else
+    i2c_bus[bus].g_scl_mask = BIT(scl_pin);
+    i2c_bus[bus].g_sda_mask = BIT(sda_pin);
+#endif
+
+    i2c_bus[bus].frequency = freq;
+    i2c_bus[bus].clk_stretch = I2C_DEFAULT_CLK_STRETCH;
 
     // Just to prevent these pins floating too much if not connected.
-    gpio_set_pullup(g_scl_pin, 1, 1);
-    gpio_set_pullup(g_sda_pin, 1, 1);
+    gpio_set_pullup(scl_pin, 1, 1);
+    gpio_set_pullup(sda_pin, 1, 1);
 
-    gpio_enable(g_scl_pin, GPIO_OUT_OPEN_DRAIN);
-    gpio_enable(g_sda_pin, GPIO_OUT_OPEN_DRAIN);
+    gpio_enable(scl_pin, GPIO_OUT_OPEN_DRAIN);
+    gpio_enable(sda_pin, GPIO_OUT_OPEN_DRAIN);
 
     // I2C bus idle state.
-    gpio_write(g_scl_pin, 1);
-    gpio_write(g_sda_pin, 1);
+    gpio_write(scl_pin, 1);
+    gpio_write(sda_pin, 1);
+
+    // Prevent user, if frequency is high
+    if (sdk_system_get_cpu_freq() == SYS_CPU_80MHZ)
+        if (i2c_freq_array[i2c_bus[bus].frequency][1] == 0) {
+            debug("Frequency not supported");
+            return -ENOTSUP;
+        }
+
+    return 0;
 }
 
-static inline void i2c_delay(void)
+void i2c_set_frequency(uint8_t bus, i2c_freq_t freq)
 {
-    sdk_os_delay_us(CLK_HALF_PERIOD_US);
+    i2c_bus[bus].frequency = freq;
 }
 
-// Set SCL as input, allowing it to float high, and return current
-// level of line, 0 or 1
-static inline bool read_scl(void)
+void i2c_set_clock_stretch(uint8_t bus, uint32_t clk_stretch)
 {
-    gpio_write(g_scl_pin, 1);
-    return gpio_read(g_scl_pin); // Clock high, valid ACK
+    i2c_bus[bus].clk_stretch = clk_stretch;
 }
 
-// Set SDA as input, allowing it to float high, and return current
-// level of line, 0 or 1
-static inline bool read_sda(void)
+static inline void i2c_delay(uint8_t bus)
 {
-    gpio_write(g_sda_pin, 1);
-    // TODO: Without this delay we get arbitration lost in i2c_stop
-    i2c_delay();
-    return gpio_read(g_sda_pin); // Clock high, valid ACK
+    uint32_t delay = i2c_bus[bus].delay;
+    __asm volatile (
+        "1: addi %0, %0, -1" "\n"
+        "bnez %0, 1b" "\n"
+    : "=a" (delay) : "0" (delay));
+}
+
+static inline bool read_scl(uint8_t bus)
+{
+#if I2C_USE_GPIO16 == 1
+    return gpio_read(i2c_bus[bus].g_scl_pin);
+#else
+    return GPIO.IN & i2c_bus[bus].g_scl_mask;
+#endif
+}
+
+static inline bool read_sda(uint8_t bus)
+{
+#if I2C_USE_GPIO16 == 1
+    return gpio_read(i2c_bus[bus].g_sda_pin);
+#else
+    return GPIO.IN & i2c_bus[bus].g_sda_mask;
+#endif
 }
 
 // Actively drive SCL signal low
-static inline void clear_scl(void)
+static inline void clear_scl(uint8_t bus)
 {
-    gpio_write(g_scl_pin, 0);
+#if I2C_USE_GPIO16 == 1
+    gpio_write(i2c_bus[bus].g_scl_pin, 0);
+#else
+    GPIO.OUT_CLEAR = i2c_bus[bus].g_scl_mask;
+#endif
 }
 
 // Actively drive SDA signal low
-static inline void clear_sda(void)
+static inline void clear_sda(uint8_t bus)
 {
-    gpio_write(g_sda_pin, 0);
+#if I2C_USE_GPIO16 == 1
+    gpio_write(i2c_bus[bus].g_sda_pin, 0);
+#else
+    GPIO.OUT_CLEAR = i2c_bus[bus].g_sda_mask;
+#endif
+}
+
+static inline void set_scl(uint8_t bus)
+{
+#if I2C_USE_GPIO16 == 1
+    gpio_write(i2c_bus[bus].g_scl_pin, 1);
+#else
+    GPIO.OUT_SET = i2c_bus[bus].g_scl_mask;
+#endif
+}
+
+static inline void set_sda(uint8_t bus)
+{
+#if I2C_USE_GPIO16 == 1
+    gpio_write(i2c_bus[bus].g_sda_pin, 1);
+#else
+    GPIO.OUT_SET = i2c_bus[bus].g_sda_mask;
+#endif
 }
 
 // Output start condition
-void i2c_start(void)
+void i2c_start(uint8_t bus)
 {
-    uint32_t clk_stretch = CLK_STRETCH;
-    if (started) { // if started, do a restart cond
+    if (sdk_system_get_cpu_freq() == SYS_CPU_160MHZ)
+       i2c_bus[bus].delay = i2c_freq_array[i2c_bus[bus].frequency][0];
+    else
+       i2c_bus[bus].delay = i2c_freq_array[i2c_bus[bus].frequency][1];
+
+    if (i2c_bus[bus].started) { // if started, do a restart cond
         // Set SDA to 1
-        (void) read_sda();
-        i2c_delay();
-        while (read_scl() == 0 && clk_stretch--) ;
+        set_sda(bus);
+        i2c_delay(bus);
+        uint32_t clk_stretch = i2c_bus[bus].clk_stretch;
+        set_scl(bus);
+        while (read_scl(bus) == 0 && clk_stretch--)
+            ;
         // Repeated start setup time, minimum 4.7us
-        i2c_delay();
+        i2c_delay(bus);
     }
-    if (read_sda() == 0) {
-        printf("I2C: arbitration lost in i2c_start\n");
+    i2c_bus[bus].started = true;
+    set_sda(bus);
+    if (read_sda(bus) == 0) {
+        debug("arbitration lost in i2c_start from bus %u", bus);
     }
     // SCL is high, set SDA from 1 to 0.
-    clear_sda();
-    i2c_delay();
-    clear_scl();
-    started = true;
+    clear_sda(bus);
+    i2c_delay(bus);
+    clear_scl(bus);
 }
 
 // Output stop condition
-void i2c_stop(void)
+bool i2c_stop(uint8_t bus)
 {
-    uint32_t clk_stretch = CLK_STRETCH;
+    uint32_t clk_stretch = i2c_bus[bus].clk_stretch;
     // Set SDA to 0
-    clear_sda();
-    i2c_delay();
+    clear_sda(bus);
+    i2c_delay(bus);
     // Clock stretching
-    while (read_scl() == 0 && clk_stretch--) ;
+    set_scl(bus);
+    while (read_scl(bus) == 0 && clk_stretch--)
+        ;
     // Stop bit setup time, minimum 4us
-    i2c_delay();
+    i2c_delay(bus);
     // SCL is high, set SDA from 0 to 1
-    if (read_sda() == 0) {
-        printf("I2C: arbitration lost in i2c_stop\n");
+    set_sda(bus);
+    // additional delay before testing SDA value to avoid wrong state
+    i2c_delay(bus); 
+    if (read_sda(bus) == 0) {
+        debug("arbitration lost in i2c_stop from bus %u", bus);
     }
-    i2c_delay();
-    started = false;
+    i2c_delay(bus);
+    if (!i2c_bus[bus].started) {
+        debug("bus %u link was break!", bus);
+        return false; // If bus was stop in other way, the current transmission Failed
+    }
+    i2c_bus[bus].started = false;
+    return true;
 }
 
 // Write a bit to I2C bus
-static void i2c_write_bit(bool bit)
+static void i2c_write_bit(uint8_t bus, bool bit)
 {
-    uint32_t clk_stretch = CLK_STRETCH;
+    uint32_t clk_stretch = i2c_bus[bus].clk_stretch;
     if (bit) {
-        (void) read_sda();
+        set_sda(bus);
     } else {
-        clear_sda();
+        clear_sda(bus);
     }
-    i2c_delay();
+    i2c_delay(bus);
     // Clock stretching
-    while (read_scl() == 0 && clk_stretch--) ;
+    set_scl(bus);
+    while (read_scl(bus) == 0 && clk_stretch--)
+        ;
     // SCL is high, now data is valid
     // If SDA is high, check that nobody else is driving SDA
-    if (bit && read_sda() == 0) {
-        printf("I2C: arbitration lost in i2c_write_bit\n");
+    if (bit && read_sda(bus) == 0) {
+        debug("arbitration lost in i2c_write_bit from bus %u", bus);
     }
-    i2c_delay();
-    clear_scl();
+    i2c_delay(bus);
+    clear_scl(bus);
 }
 
 // Read a bit from I2C bus
-static bool i2c_read_bit(void)
+static bool i2c_read_bit(uint8_t bus)
 {
-    uint32_t clk_stretch = CLK_STRETCH;
+    uint32_t clk_stretch = i2c_bus[bus].clk_stretch;
     bool bit;
     // Let the slave drive data
-    (void) read_sda();
-    i2c_delay();
+    set_sda(bus);
+    i2c_delay(bus);
+    set_scl(bus);
     // Clock stretching
-    while (read_scl() == 0 && clk_stretch--) ;
+    while (read_scl(bus) == 0 && clk_stretch--)
+        ;
     // SCL is high, now data is valid
-    bit = read_sda();
-    i2c_delay();
-    clear_scl();
+    bit = read_sda(bus);
+    i2c_delay(bus);
+    clear_scl(bus);
     return bit;
 }
 
-bool i2c_write(uint8_t byte)
+bool i2c_write(uint8_t bus, uint8_t byte)
 {
     bool nack;
     uint8_t bit;
     for (bit = 0; bit < 8; bit++) {
-        i2c_write_bit((byte & 0x80) != 0);
+        i2c_write_bit(bus, (byte & 0x80) != 0);
         byte <<= 1;
     }
-    nack = i2c_read_bit();
+    nack = i2c_read_bit(bus);
     return !nack;
 }
 
-uint8_t i2c_read(bool ack)
+uint8_t i2c_read(uint8_t bus, bool ack)
 {
     uint8_t byte = 0;
     uint8_t bit;
     for (bit = 0; bit < 8; bit++) {
-        byte = (byte << 1) | i2c_read_bit();
+        byte = ((byte << 1)) | (i2c_read_bit(bus));
     }
-    i2c_write_bit(ack);
+    i2c_write_bit(bus, ack);
     return byte;
 }
 
-bool i2c_slave_write(uint8_t slave_addr, uint8_t *data, uint8_t len)
+void i2c_force_bus(uint8_t bus, bool state)
 {
-    bool success = false;
-    do {
-        i2c_start();
-        if (!i2c_write(slave_addr << 1))
-            break;
-        while (len--) {
-            if (!i2c_write(*data++))
-                break;
-        }
-        i2c_stop();
-        success = true;
-    } while(0);
-    return success;
+    i2c_bus[bus].force = state;
 }
 
-bool i2c_slave_read(uint8_t slave_addr, uint8_t data, uint8_t *buf, uint32_t len)
+static int i2c_bus_test(uint8_t bus)
 {
-    bool success = false;
-    do {
-        i2c_start();
-        if (!i2c_write(slave_addr << 1)) {
-            break;
-        }
-        i2c_write(data);
-        i2c_stop();
-        i2c_start();
-        if (!i2c_write(slave_addr << 1 | 1)) { // Slave address + read
-            break;
-        }
-        while(len) {
-            *buf = i2c_read(len == 1);
-            buf++;
-            len--;
-        }
-        success = true;
-    } while(0);
-    i2c_stop();
-    if (!success) {
-        printf("I2C: write error\n");
+    taskENTER_CRITICAL(); // To prevent task swaping after checking flag and before set it!
+    bool status = i2c_bus[bus].flag; // get current status
+    if (i2c_bus[bus].force) {
+        i2c_bus[bus].flag = true; // force bus on
+        taskEXIT_CRITICAL();
+        if (status)
+           i2c_stop(bus); //Bus was busy, stop it.
     }
-    return success;
+    else {
+        if (status) {
+            taskEXIT_CRITICAL();
+            debug("busy");
+            taskYIELD(); // If bus busy, change task to try finish last com.
+            return -EBUSY;  // If bus busy, inform user
+        }
+        else {
+            i2c_bus[bus].flag = true; // Set Bus busy
+            taskEXIT_CRITICAL();
+        }
+    }
+    return 0;
+}
+
+int i2c_slave_write(uint8_t bus, uint8_t slave_addr, const uint8_t *data, const uint8_t *buf, uint32_t len)
+{
+    if (i2c_bus_test(bus))
+        return -EBUSY;
+    i2c_start(bus);
+    if (!i2c_write(bus, slave_addr << 1))
+        goto error;
+    if (data != NULL)
+        if (!i2c_write(bus, *data))
+            goto error;
+    while (len--) {
+        if (!i2c_write(bus, *buf++))
+            goto error;
+    }
+    if (!i2c_stop(bus))
+        goto error;
+    i2c_bus[bus].flag = false; // Bus free
+    return 0;
+
+error:
+    debug("Bus %u Write Error", bus);
+    i2c_stop(bus);
+    i2c_bus[bus].flag = false; // Bus free
+    return -EIO;
+}
+
+int i2c_slave_read(uint8_t bus, uint8_t slave_addr, const uint8_t *data, uint8_t *buf, uint32_t len)
+{
+    if (i2c_bus_test(bus))
+        return -EBUSY;
+    if (data != NULL) {
+        i2c_start(bus);
+        if (!i2c_write(bus, slave_addr << 1))
+            goto error;
+        if (!i2c_write(bus, *data))
+            goto error;
+    }
+    i2c_start(bus);
+    if (!i2c_write(bus, slave_addr << 1 | 1)) // Slave address + read
+        goto error;
+    while(len) {
+        *buf = i2c_read(bus, len == 1);
+        buf++;
+        len--;
+    }
+    if (!i2c_stop(bus))
+        goto error;
+    i2c_bus[bus].flag = false; // Bus free
+    return 0;
+
+error:
+    debug("Read Error");
+    i2c_stop(bus);
+    i2c_bus[bus].flag = false; // Bus free
+    return -EIO;
 }

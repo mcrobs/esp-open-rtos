@@ -1,15 +1,31 @@
-/* Default esp-open-sdk FreeRTOSConfig file.
+/*
+ * FreeRTOS Kernel V10.0.0
+ * Copyright (C) 2017 Amazon.com, Inc. or its affiliates.  All Rights Reserved.
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a copy of
+ * this software and associated documentation files (the "Software"), to deal in
+ * the Software without restriction, including without limitation the rights to
+ * use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of
+ * the Software, and to permit persons to whom the Software is furnished to do so,
+ * subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in all
+ * copies or substantial portions of the Software. If you wish to use our Amazon
+ * FreeRTOS name, please do so in a fair use way that does not cause confusion.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS
+ * FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR
+ * COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER
+ * IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+ * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+ *
+ * http://www.FreeRTOS.org
+ * http://aws.amazon.com/freertos
+ *
+ * 1 tab == 4 spaces!
+ */
 
-   You can override settings in here by creating your own
-   FreeRTOSConfig.h file in your program directory.
-
-   You could just copy this file there and edit it, but it's
-   recommended you instead define whatever you want to override and
-   then use #include_next<FreeRTOSConfig.h> to pick up these defaults.
-
-   The "blink" example in "examples/blink" provides an example of how
-   to do this.
-*/
 #ifndef __DEFAULT_FREERTOS_CONFIG_H
 #define __DEFAULT_FREERTOS_CONFIG_H
 
@@ -20,7 +36,7 @@
  * application requirements.
  *
  * THESE PARAMETERS ARE DESCRIBED WITHIN THE 'CONFIGURATION' SECTION OF THE
- * FreeRTOS API DOCUMENTATION AVAILABLE ON THE FreeRTOS.org WEB SITE. 
+ * FreeRTOS API DOCUMENTATION AVAILABLE ON THE FreeRTOS.org WEB SITE.
  *
  * See http://www.freertos.org/a00110.html.
  *----------------------------------------------------------*/
@@ -47,7 +63,7 @@
 #define configTICK_RATE_HZ			( ( TickType_t ) 100 )
 #endif
 #ifndef configMAX_PRIORITIES
-#define configMAX_PRIORITIES		( ( unsigned portBASE_TYPE ) 15 )
+#define configMAX_PRIORITIES		( 15 )
 #endif
 #ifndef configMINIMAL_STACK_SIZE
 #define configMINIMAL_STACK_SIZE	( ( unsigned short )256 )
@@ -81,6 +97,9 @@
 #ifndef configCHECK_FOR_STACK_OVERFLOW
 #define configCHECK_FOR_STACK_OVERFLOW  2
 #endif
+#ifndef configUSE_RECURSIVE_MUTEXES
+#define configUSE_RECURSIVE_MUTEXES 1
+#endif
 #ifndef configUSE_MUTEXES
 #define configUSE_MUTEXES  1
 #endif
@@ -106,6 +125,10 @@
 #endif
 #ifndef configMAX_CO_ROUTINE_PRIORITIES
 #define configMAX_CO_ROUTINE_PRIORITIES ( 2 )
+#endif
+
+#ifndef configUSE_NEWLIB_REENTRANT
+#define configUSE_NEWLIB_REENTRANT 1
 #endif
 
 /* Set the following definitions to 1 to include the API function, or zero
@@ -143,6 +166,11 @@ to exclude the API function. */
 #ifndef configENABLE_BACKWARD_COMPATIBILITY
 #define configENABLE_BACKWARD_COMPATIBILITY 0
 #endif
+
+/* Normal assert() semantics without relying on the provision of an assert.h
+header file. */
+void vAssertCalled(const char * pcFile, unsigned long ulLine);
+#define configASSERT(x) if((x) == 0) vAssertCalled(__FILE__, __LINE__);
 
 #endif /* __DEFAULT_FREERTOS_CONFIG_H */
 

@@ -159,6 +159,22 @@ inline static void _start(uint8_t bus)
     SPI(bus).CMD |= SPI_CMD_USR;
 }
 
+inline static void _store_data(uint8_t bus, const void *data, size_t len)
+{
+    uint8_t words = len / 4;
+    uint8_t tail = len % 4;
+
+    memcpy((void *)SPI(bus).W, data, len - tail);
+
+    if (!tail) return;
+
+    uint32_t last = 0;
+    uint8_t *offs = (uint8_t *)data + len - tail;
+    for (uint8_t i = 0; i < tail; i++)
+        last = last | (offs[i] << (i * 8));
+    SPI(bus).W[words] = last;
+}
+
 inline static uint32_t _swap_bytes(uint32_t value)
 {
     return (value << 24) | ((value << 8) & 0x00ff0000) | ((value >> 8) & 0x0000ff00) | (value >> 24);
@@ -189,9 +205,7 @@ static void _spi_buf_transfer(uint8_t bus, const void *out_data, void *in_data,
     _wait(bus);
     size_t bytes = len * (uint8_t)word_size;
     _set_size(bus, bytes);
-    // memcpy((void *)SPI(bus).W, out_data, bytes); // <- It's buggy
-    for (uint8_t i = 0; i < bytes; i ++)
-        ((uint8_t *)SPI(bus).W)[i] = ((uint8_t *)out_data)[i];
+    _store_data(bus, out_data, bytes);
     _spi_buf_prepare(bus, len, e, word_size);
     _start(bus);
     _wait(bus);
@@ -269,7 +283,7 @@ size_t spi_transfer(uint8_t bus, const void *out_data, void *in_data, size_t len
         size_t offset = i * _SPI_BUF_SIZE;
         _spi_buf_transfer(bus, (const uint8_t *)out_data + offset,
             in_data ? (uint8_t *)in_data + offset : NULL, buf_size, e, word_size);
-        if (blocks) _rearm_extras_bit(bus, false);
+       _rearm_extras_bit(bus, false);
     }
 
     uint8_t tail = len % buf_size;
@@ -281,6 +295,41 @@ size_t spi_transfer(uint8_t bus, const void *out_data, void *in_data, size_t len
 
     if (blocks) _rearm_extras_bit(bus, true);
     return len;
+}
+
+static void _spi_buf_read(uint8_t bus, uint8_t b, void *in_data,
+    size_t len, spi_endianness_t e, spi_word_size_t word_size)
+{
+    _wait(bus);
+    size_t bytes = len * (uint8_t)word_size;
+    _set_size(bus, bytes);
+    uint32_t w = ((uint32_t)b << 24) | ((uint32_t)b << 16) | ((uint32_t)b << 8) | b;
+    for (uint8_t i = 0; i < _SPI_BUF_SIZE / 4; i ++)
+        SPI(bus).W[i] = w;
+    _start(bus);
+    _wait(bus);
+    _spi_buf_prepare(bus, len, e, word_size);
+    memcpy(in_data, (void *)SPI(bus).W, bytes);
+}
+
+void spi_read(uint8_t bus, uint8_t out_byte, void *in_data, size_t len, spi_word_size_t word_size)
+{
+    spi_endianness_t e = spi_get_endianness(bus);
+    uint8_t buf_size = _SPI_BUF_SIZE / (uint8_t)word_size;
+
+    size_t blocks = len / buf_size;
+    for (size_t i = 0; i < blocks; i++)
+    {
+        size_t offset = i * _SPI_BUF_SIZE;
+        _spi_buf_read(bus, out_byte, (uint8_t *)in_data + offset, buf_size, e, word_size);
+       _rearm_extras_bit(bus, false);
+    }
+
+    uint8_t tail = len % buf_size;
+    if (tail)
+        _spi_buf_read(bus, out_byte, (uint8_t *)in_data + blocks * _SPI_BUF_SIZE, tail, e, word_size);
+
+    if (blocks) _rearm_extras_bit(bus, true);
 }
 
 static void _repeat_send(uint8_t bus, uint32_t *dword, int32_t *repeats,

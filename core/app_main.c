@@ -134,6 +134,10 @@ static void IRAM default_putc(char c) {
     uart_putc(0, c);
 }
 
+void init_newlib_locks(void);
+extern uint8_t sdk_wDevCtrl[];
+void nano_malloc_insert_chunk(void *start, size_t size);
+
 // .text+0x258
 void IRAM sdk_user_start(void) {
     uint32_t buf32[sizeof(struct sdk_g_ic_saved_st) / 4];
@@ -201,6 +205,15 @@ void IRAM sdk_user_start(void) {
     Cache_Read_Enable(0, 0, 1);
     zero_bss();
     sdk_os_install_putc1(default_putc);
+
+    /* HACK Reclaim a region of unused bss from wdev.o. This would not be
+     * necessary if the source code to wdev were available, and then it would
+     * not be a fragmented area, but the extra memory is desparately needed and
+     * it is in very useful dram. */
+    nano_malloc_insert_chunk((void *)(sdk_wDevCtrl + 0x2190), 8000);
+
+    init_newlib_locks();
+
     if (cksum_magic == 0xffffffff) {
         // No checksum required
     } else if ((cksum_magic == 0x55aa55aa) &&
@@ -214,8 +227,8 @@ void IRAM sdk_user_start(void) {
     memcpy(&sdk_g_ic.s, buf32, sizeof(struct sdk_g_ic_saved_st));
 
     // By default, put the sysparam region just below the config sectors at the
-    // top of the flash space
-    sysparam_addr = flash_size - (4 + DEFAULT_SYSPARAM_SECTORS) * sdk_flashchip.sector_size;
+    // top of the flash space, and allowing one extra sector spare.
+    sysparam_addr = flash_size - (5 + DEFAULT_SYSPARAM_SECTORS) * sdk_flashchip.sector_size;
     status = sysparam_init(sysparam_addr, flash_size);
     if (status == SYSPARAM_NOTFOUND) {
         status = sysparam_create_area(sysparam_addr, DEFAULT_SYSPARAM_SECTORS, false);
@@ -236,12 +249,12 @@ void IRAM vApplicationStackOverflowHook(TaskHandle_t task, char *task_name) {
 }
 
 // .text+0x3d8
-void IRAM vApplicationIdleHook(void) {
+void __attribute__((weak)) IRAM vApplicationIdleHook(void) {
     printf("idle %u\n", WDEV.SYS_TIME);
 }
 
 // .text+0x404
-void IRAM vApplicationTickHook(void) {
+void __attribute__((weak)) IRAM vApplicationTickHook(void) {
     printf("tick %u\n", WDEV.SYS_TIME);
 }
 
@@ -311,8 +324,8 @@ static void init_g_ic(void) {
     if (sdk_g_ic.s._unknown310 > 4) {
         sdk_g_ic.s._unknown310 = 4;
     }
-    if (sdk_g_ic.s._unknown1e4._unknown1e4 == 0xffffffff) {
-        bzero(&sdk_g_ic.s._unknown1e4, sizeof(sdk_g_ic.s._unknown1e4));
+    if (sdk_g_ic.s.sta_ssid.ssid_length == 0xffffffff) {
+        bzero(&sdk_g_ic.s.sta_ssid, sizeof(sdk_g_ic.s.sta_ssid));
         bzero(&sdk_g_ic.s.sta_password, sizeof(sdk_g_ic.s.sta_password));
     }
     sdk_g_ic.s.wifi_led_enable = 0;
@@ -339,9 +352,15 @@ void sdk_wdt_init(void) {
     sdk_pp_soft_wdt_init();
 }
 
+extern void *xPortSupervisorStackPointer;
+
 // .irom0.text+0x474
 void sdk_user_init_task(void *params) {
     int phy_ver, pp_ver;
+
+    /* The start up stack is not used after scheduling has started, so all of
+     * the top area of RAM which was stack can be used for the dynamic heap. */
+    xPortSupervisorStackPointer = (void *)0x40000000;
 
     sdk_ets_timer_init();
     printf("\nESP-Open-SDK ver: %s compiled @ %s %s\n", OS_VERSION_STR, __DATE__, __TIME__);
@@ -352,18 +371,18 @@ void sdk_user_init_task(void *params) {
     user_init();
     sdk_user_init_flag = 1;
     sdk_wifi_mode_set(sdk_g_ic.s.wifi_mode);
-    if (sdk_g_ic.s.wifi_mode == 1) {
+    if (sdk_g_ic.s.wifi_mode == STATION_MODE) {
         sdk_wifi_station_start();
         netif_set_default(sdk_g_ic.v.station_netif_info->netif);
     }
-    if (sdk_g_ic.s.wifi_mode == 2) {
+    if (sdk_g_ic.s.wifi_mode == SOFTAP_MODE) {
         sdk_wifi_softap_start();
         netif_set_default(sdk_g_ic.v.softap_netif_info->netif);
     }
-    if (sdk_g_ic.s.wifi_mode == 3) {
+    if (sdk_g_ic.s.wifi_mode == STATIONAP_MODE) {
         sdk_wifi_station_start();
         sdk_wifi_softap_start();
-        netif_set_default(sdk_g_ic.v.softap_netif_info->netif);
+        netif_set_default(sdk_g_ic.v.station_netif_info->netif);
     }
     if (sdk_wifi_station_get_auto_connect()) {
         sdk_wifi_station_connect();

@@ -21,6 +21,7 @@
  *  This file is part of mbed TLS (https://tls.mbed.org)
  */
 
+#include <fcntl.h>
 #if !defined(MBEDTLS_CONFIG_FILE)
 #include "mbedtls/config.h"
 #else
@@ -29,7 +30,7 @@
 
 #if defined(MBEDTLS_NET_C)
 
-#include "mbedtls/net.h"
+#include "mbedtls/net_sockets.h"
 
 #include <string.h>
 

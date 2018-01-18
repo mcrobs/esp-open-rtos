@@ -3,9 +3,6 @@
    Copyright (C) 2015 Espressif Systems. Derived from MIT Licensed SDK libraries.
    BSD Licensed as described in the file LICENSE
 */
-#include "open_esplibs.h"
-#if OPEN_LIBMAIN_USER_INTERFACE
-// The contents of this file are only built if OPEN_LIBMAIN_USER_INTERFACE is set to true
 
 #include "FreeRTOS.h"
 #include "task.h"
@@ -66,10 +63,10 @@ static void _deep_sleep_phase2(void *timer_arg);
 static struct netif *_get_netif(uint32_t mode);
 
 // Linker-created values used by sdk_system_print_meminfo
-extern uint32_t _data_start, _data_end;
-extern uint32_t _rodata_start, _rodata_end;
-extern uint32_t _bss_start, _bss_end;
-extern uint32_t _heap_start;
+extern uint8_t _data_start[], _data_end[];
+extern uint8_t _rodata_start[], _rodata_end[];
+extern uint8_t _bss_start[], _bss_end[];
+extern uint8_t _heap_start[];
 
 #define _rom_reset_vector ((void (*)(void))0x40000080)
 
@@ -147,8 +144,8 @@ bool IRAM sdk_system_rtc_mem_read(uint32_t src_addr, void *des_addr, uint16_t sa
     return true;
 }
 
-void sdk_system_pp_recycle_rx_pkt(void *eb) {
-        sdk_ppRecycleRxPkt(eb);
+void sdk_system_pp_recycle_rx_pkt(struct esf_buf *esf_buf) {
+        sdk_ppRecycleRxPkt(esf_buf);
 }
 
 uint16_t sdk_system_adc_read(void) {
@@ -471,8 +468,7 @@ uint32_t sdk_system_relative_time(uint32_t reltime) {
     return WDEV.SYS_TIME - reltime;
 }
 
-// Change arg types to ip4_addr for lwip v2.
-void sdk_system_station_got_ip_set(struct ip_addr *ip, struct ip_addr *mask, struct ip_addr *gw) {
+void sdk_system_station_got_ip_set(struct ip4_addr *ip, struct ip4_addr *mask, struct ip4_addr *gw) {
     uint8_t *ip_bytes = (uint8_t *)&ip->addr;
     uint8_t *mask_bytes = (uint8_t *)&mask->addr;
     uint8_t *gw_bytes = (uint8_t *)&gw->addr;
@@ -488,11 +484,14 @@ void sdk_system_station_got_ip_set(struct ip_addr *ip, struct ip_addr *mask, str
     }
 }
 
+extern void *xPortSupervisorStackPointer;
+
 void sdk_system_print_meminfo(void) {
-    printf("%s: 0x%x ~ 0x%x, len: %d\n", "data  ", _data_start, _data_end, _data_end - _data_start);
-    printf("%s: 0x%x ~ 0x%x, len: %d\n", "rodata", _rodata_start, _rodata_end, _rodata_end - _rodata_start);
-    printf("%s: 0x%x ~ 0x%x, len: %d\n", "bss   ", _bss_start, _bss_end, _bss_end - _bss_start);
-    printf("%s: 0x%x ~ 0x%x, len: %d\n", "heap  ", _heap_start, 0x3fffc000, 0x3fffc000 - _heap_start);
+    uint8_t *heap_end = xPortSupervisorStackPointer;
+    printf("%s: %p ~ %p, len: %d\n", "data  ", _data_start, _data_end, _data_end - _data_start);
+    printf("%s: %p ~ %p, len: %d\n", "rodata", _rodata_start, _rodata_end, _rodata_end - _rodata_start);
+    printf("%s: %p ~ %p, len: %d\n", "bss   ", _bss_start, _bss_end, _bss_end - _bss_start);
+    printf("%s: %p ~ %p, len: %d\n", "heap  ", _heap_start, heap_end, heap_end - _heap_start);
 }
 
 uint32_t sdk_system_get_free_heap_size(void) {
@@ -588,9 +587,9 @@ bool sdk_wifi_get_ip_info(uint8_t if_index, struct ip_info *info) {
     if (!info) return false;
     struct netif *netif = _get_netif(if_index);
     if (netif) {
-        info->ip = netif->ip_addr;
-        info->netmask = netif->netmask;
-        info->gw = netif->gw;
+        ip4_addr_set(&info->ip, ip_2_ip4(&netif->ip_addr));
+        ip4_addr_set(&info->netmask, ip_2_ip4(&netif->netmask));
+        ip4_addr_set(&info->gw, ip_2_ip4(&netif->gw));
         return true;
     }
 
@@ -719,5 +718,3 @@ bool sdk_wifi_set_sleep_type(enum sdk_sleep_type type)
     sdk_pm_set_sleep_type_from_upper(type);
     return true;
 }
-
-#endif /* OPEN_LIBMAIN_USER_INTERFACE */
